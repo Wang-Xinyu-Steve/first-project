@@ -6,7 +6,6 @@ from trafilatura.settings import use_config
 import os
 import re
 import hashlib
-import json
 from datetime import datetime
 import time
 import random
@@ -19,6 +18,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import sys
 from typing import Optional
+import seleniumwire
+print("seleniumwire 已成功导入！")
+try:
+    from seleniumwire.webdriver import Edge as WireEdge
+except ImportError:
+    WireEdge = None
+from selenium.webdriver.edge.options import Options as EdgeOptions
 
 USER_AGENTS = [
     # Chrome
@@ -43,7 +49,7 @@ USER_AGENTS = [
 # 依赖检查
 REQUIRED_MODULES = [
     'argparse', 'urllib.parse', 'requests', 'bs4', 'trafilatura', 'os', 're', 'hashlib', 'json',
-    'datetime', 'time', 'random', 'selenium', 'webdriver_manager',
+    'datetime', 'time', 'random', 'selenium', 'webdriver_manager', 'seleniumwire',
 ]
 missing = []
 for mod in REQUIRED_MODULES:
@@ -194,6 +200,26 @@ class DeepSeekSummarizer:
             except Exception:
                 pass
             self.driver = None
+
+    def _init_edge_wire_driver(self):
+        """初始化 selenium-wire Edge，仅微信分支用"""
+        edge_options = EdgeOptions()
+        edge_options.add_argument('--disable-blink-features=AutomationControlled')
+        edge_options.add_argument('--start-maximized')
+        edge_options.add_argument('--no-sandbox')
+        edge_options.add_argument('--disable-gpu')
+        edge_options.add_argument('--disable-dev-shm-usage')
+        edge_options.add_argument(f'--user-agent={random.choice(USER_AGENTS)}')
+        wire_options = {
+            'disable_encoding': True,
+        }
+        if WireEdge is None:
+            raise ImportError('请先安装selenium-wire: pip install selenium-wire')
+        self.driver = WireEdge(options=edge_options, seleniumwire_options=wire_options)
+        self.driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"}
+        )
 
     def fetch_web_content(self, url: str) -> tuple[str, str] | None:
         """
@@ -781,14 +807,14 @@ class DeepSeekSummarizer:
         
         elif "weixin.qq.com" in url:  # 微信域名
             print(f"[DEBUG] 进入微信分支: {url}")
-            if self.driver is None:
+            if self.driver is None or not hasattr(self.driver, 'requests'):
                 try:
-                    self._init_edge_driver()
+                    self._init_edge_wire_driver()
                 except Exception as e:
-                    print(f"Edge驱动初始化失败: {e}")
+                    print(f"Edge selenium-wire驱动初始化失败: {e}")
                     return None
             if self.driver is None:
-                print("Edge驱动未初始化，无法打开网页")
+                print("Edge selenium-wire驱动未初始化，无法打开网页")
                 return None
             try:
                 self.driver.get(url)
@@ -816,78 +842,73 @@ class DeepSeekSummarizer:
                 img_dir = os.path.join(save_dir, "images")
                 os.makedirs(img_dir, exist_ok=True)
 
-                # 3. 正文内容提取
-                # 先滚动确保内容加载
+                # 3. 优化滚动逻辑：先等待5秒，再缓慢滚动到底
+                print("[DEBUG] 页面加载后等待5秒...")
+                time.sleep(5)
                 last_height = self.driver.execute_script("return document.body.scrollHeight")
-                for _ in range(3):
-                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(1)
-                    new_height = self.driver.execute_script("return document.body.scrollHeight")
-                    if new_height == last_height:
-                        break
-                    last_height = new_height
+                scroll_step = 300
+                current_position = 0
+                while current_position < last_height:
+                    self.driver.execute_script(f"window.scrollTo(0, {current_position});")
+                    time.sleep(0.5)
+                    current_position += scroll_step
+                    last_height = self.driver.execute_script("return document.body.scrollHeight")
+                # 最后确保滚动到最底部
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(2)
 
-                # 提取所有段落
-                paragraphs = self.driver.find_elements(
-                    By.XPATH,
-                    '//section[@data-role="paragraph"]//p[normalize-space()]'
-                )
-                content_text = "\n".join([p.text.strip() for p in paragraphs if p.text.strip()])
-
-                # 新增：图片提取、去重、保存
-                img_elements = self.driver.find_elements(By.XPATH, '//section[@data-role="paragraph"]//img')
+                # 4. 递归遍历正文主容器所有节点，保证图片与文本顺序和内容完整
+                content_div = self.driver.find_element(By.XPATH, '//div[@id="js_content"]')
                 img_records = []
-                img_index = 1
-                seen_images = set()
+                img_index = [1]  # 用列表做可变引用
                 inserted_images = set()
-                extracted_content = [content_text]
-                for idx in range(len(img_elements)):
-                    try:
-                        img_elements_fresh = self.driver.find_elements(By.XPATH, '//section[@data-role="paragraph"]//img')
-                        if idx >= len(img_elements_fresh):
-                            continue
-                        img = img_elements_fresh[idx]
-                        img_url = (img.get_attribute("src") or 
-                                img.get_attribute("data-src") or 
-                                img.get_attribute("data-original") or
-                                img.get_attribute("data-actualsrc"))
-                        if img_url and not img_url.startswith(("http://", "https://", "data:image")):
-                            img_url = urljoin(url, img_url)
-                        img_name = f"image_{img_index}.jpg"
-                        abs_img_path = os.path.join(img_dir, img_name)
-                        if img_url and img_url.startswith("data:image"):
-                            import base64
-                            header, encoded = img_url.split(",", 1)
-                            img_data = base64.b64decode(encoded)
-                            with open(abs_img_path, 'wb') as f:
-                                f.write(img_data)
-                        elif img_url and img_url.startswith(("http://", "https://")):
-                            if img_url in seen_images:
-                                continue
-                            seen_images.add(img_url)
-                            try:
-                                img_data = requests.get(img_url, headers=headers, timeout=10).content
-                                with open(abs_img_path, 'wb') as f:
-                                    f.write(img_data)
-                            except Exception as download_error:
-                                print(f"图片下载失败: {str(download_error)}")
-                                continue
-                        else:
-                            continue
-                        alt_text = img.get_attribute("alt") or "图片"
-                        if img_url not in inserted_images:
+                seen_texts = set()
+                def extract_content(element):
+                    content = []
+                    tag_name = element.tag_name.lower()
+                    # 处理图片
+                    if tag_name == 'img':
+                        img_url = (
+                            element.get_attribute("src") or 
+                            element.get_attribute("data-src") or 
+                            element.get_attribute("data-original") or
+                            element.get_attribute("data-actualsrc")
+                        )
+                        if img_url:
+                            # 统一为绝对路径，去除 query 参数
+                            img_url = urljoin(url, img_url.split('?')[0])
+                        if img_url and img_url not in inserted_images:
+                            img_name = f"image_{img_index[0]}.jpg"
+                            abs_img_path = os.path.join(img_dir, img_name)
+                            for req in self.driver.requests:  # type: ignore
+                                if req.response and req.url.split('?')[0] == img_url:
+                                    if not os.path.exists(abs_img_path):
+                                        with open(abs_img_path, 'wb') as f:
+                                            f.write(req.response.body)
+                                    break
                             img_records.append({
                                 'path': os.path.join(img_dir, img_name),
-                                'alt': alt_text
+                                'alt': element.get_attribute("alt") or "图片"
                             })
-                            extracted_content.append(f"[IMAGE_PLACEHOLDER:{len(img_records)-1}]")
-                            img_index += 1
+                            content.append(f"[IMAGE_PLACEHOLDER:{len(img_records)-1}]")
+                            img_index[0] += 1
                             inserted_images.add(img_url)
-                    except Exception as e:
-                        print(f"图片处理失败: {str(e)}")
-                        continue
-
-                # 处理图片占位符，替换为Markdown图片语法
+                    else:
+                        # 判断是否为叶子节点（无子节点）
+                        children = element.find_elements(By.XPATH, './*')
+                        if not children:
+                            text = (element.get_attribute('textContent') or '').strip()
+                            # 标准化文本用于去重（去除所有空白符）
+                            norm_text = re.sub(r'\s+', '', text)
+                            if norm_text and norm_text not in seen_texts:
+                                content.append(text)
+                                seen_texts.add(norm_text)
+                        # 递归处理所有子节点
+                        for child in children:
+                            content.extend(extract_content(child))
+                    return content
+                extracted_content = extract_content(content_div)
+                # 5. 处理图片占位符，替换为Markdown图片语法
                 final_content = []
                 for item in extracted_content:
                     if isinstance(item, str) and item.startswith("[IMAGE_PLACEHOLDER:"):
@@ -903,20 +924,11 @@ class DeepSeekSummarizer:
                             continue
                     else:
                         final_content.append(item)
-
                 # 结构化输出
-                extracted_content = f"""# {title}
-
-## 作者信息
-{author}
-
-## 正文内容
-{chr(10).join(final_content)}
-"""
+                extracted_content = f"""# {title}\n\n## 作者信息\n{author}\n\n## 正文内容\n{chr(10).join(final_content)}\n"""
                 raw_content = extracted_content
                 self._save_raw_text(raw_content, url, save_dir)
                 return raw_content, save_dir
-
             except Exception as e:
                 print(f"[DEBUG] 微信内容提取失败: {str(e)}")
                 if self.driver:
