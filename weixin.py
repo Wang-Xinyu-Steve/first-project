@@ -8,6 +8,8 @@ from datetime import datetime
 from urllib.parse import urljoin
 import re
 from util._save_raw_text import _save_raw_text
+from util.summary_xhs import safe_filename
+from PIL import Image
 
 class WeixinSummarizer(BaseSummarizer):
     def fetch_web_content(self, url: str):
@@ -23,7 +25,7 @@ class WeixinSummarizer(BaseSummarizer):
         title = self.driver.find_element(By.XPATH, '//h1[@id="activity-name"]').text.strip()
         author = self.driver.find_element(By.XPATH, '//div[@id="meta_content"]').text.strip()
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        folder_name = f"weixin_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        folder_name = safe_filename(f"weixin_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         save_dir = os.path.join(desktop, folder_name)
         img_dir = os.path.join(save_dir, "images")
         os.makedirs(img_dir, exist_ok=True)
@@ -57,13 +59,24 @@ class WeixinSummarizer(BaseSummarizer):
                 if img_url:
                     img_url = urljoin(url, img_url.split('?')[0])
                 if img_url and img_url not in inserted_images:
-                    img_name = f"image_{img_index[0]}.jpg"
+                    img_name = safe_filename(f"image_{img_index[0]}.jpg")
                     abs_img_path = os.path.join(img_dir, img_name)
                     for req in self.driver.requests:  # type: ignore
                         if req.response and req.url.split('?')[0] == img_url:
                             if not os.path.exists(abs_img_path):
-                                with open(abs_img_path, 'wb') as f:
+                                # 先保存原始图片到临时文件
+                                tmp_path = abs_img_path + ".tmp"
+                                with open(tmp_path, 'wb') as f:
                                     f.write(req.response.body)
+                                # 用Pillow转换为jpg
+                                try:
+                                    with Image.open(tmp_path) as img:
+                                        rgb_img = img.convert('RGB')
+                                        rgb_img.save(abs_img_path, format='JPEG')
+                                    os.remove(tmp_path)
+                                except Exception as e:
+                                    print(f"图片格式转换失败: {e}")
+                                    os.rename(tmp_path, abs_img_path)  # 保底直接重命名
                             break
                     img_records.append({
                         'path': os.path.join(img_dir, img_name),

@@ -10,6 +10,8 @@ import requests
 import random
 from useragents import USER_AGENTS
 from util._save_raw_text import _save_raw_text
+from util.summary_xhs import safe_filename
+from PIL import Image
 
 class XiaohongshuSummarizer(BaseSummarizer):
     def _close_xiaohongshu_popup(self):
@@ -31,90 +33,122 @@ class XiaohongshuSummarizer(BaseSummarizer):
                 break
 
     def fetch_web_content(self, url: str):
-        if self.driver is None:
-            self._init_edge_driver()
-        headers = {'User-Agent': random.choice(USER_AGENTS)}
-        if "xhslink.com" in url:
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-                url = resp.url
-            except Exception as e:
-                print(f"[错误] 小红书短链跳转失败: {e}")
-                return None
-        assert self.driver is not None
-        self.driver.get(url)
-        time.sleep(2)
-        WebDriverWait(self.driver, 15).until(
-            EC.presence_of_element_located((By.XPATH, '//div[@id="detail-title"]'))
-        )
-        self._close_xiaohongshu_popup()
-        title = self.driver.find_element(By.XPATH, '//div[@id="detail-title"]').text.strip()
-        author = self.driver.find_element(By.XPATH, '//span[@class="username"]').text.strip()
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        folder_name = f"xiaohongshu_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        save_dir = os.path.join(desktop, folder_name)
-        img_dir = os.path.join(save_dir, "images")
-        os.makedirs(img_dir, exist_ok=True)
-        desc_element = self.driver.find_element(By.XPATH, '//div[@id="detail-desc"]')
-        content_text = desc_element.text.strip()
-        for _ in range(3):
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1)
-        main_imgs = self.driver.find_elements(By.XPATH, '//img[contains(@class,"note-slider-img")]')
-        desc_imgs = desc_element.find_elements(By.XPATH, './/img')
-        all_imgs = main_imgs + desc_imgs
-        img_url_set = set()
-        img_records = []
-        img_index = 1
-        inserted_images = set()
-        extracted_content = [content_text]
-        for img in all_imgs:
-            try:
-                img_url = (img.get_attribute("src") or 
-                        img.get_attribute("data-src") or 
-                        img.get_attribute("data-original") or
-                        img.get_attribute("data-actualsrc"))
-                if img_url and not img_url.startswith(("http://", "https://")):
-                    img_url = urljoin(url, img_url)
-                if img_url and img_url.startswith(("http://", "https://")):
-                    if img_url in img_url_set:
+                if self.driver is None:
+                    self._init_edge_driver()
+                headers = {'User-Agent': random.choice(USER_AGENTS)}
+                if "xhslink.com" in url:
+                    try:
+                        resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+                        url = resp.url
+                    except Exception as e:
+                        print(f"[错误] 小红书短链跳转失败: {e}")
+                        return None
+                assert self.driver is not None
+                self.driver.get(url)
+                time.sleep(3)  # 增加等待时间
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.XPATH, '//div[@id="detail-title"]'))
+                )
+                self._close_xiaohongshu_popup()
+                title = self.driver.find_element(By.XPATH, '//div[@id="detail-title"]').text.strip()
+                author = self.driver.find_element(By.XPATH, '//span[@class="username"]').text.strip()
+                desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+                folder_name = safe_filename(f"xiaohongshu_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                save_dir = os.path.join(desktop, folder_name)
+                img_dir = os.path.join(save_dir, "images")
+                os.makedirs(img_dir, exist_ok=True)
+                desc_element = self.driver.find_element(By.XPATH, '//div[@id="detail-desc"]')
+                content_text = desc_element.text.strip()
+                for _ in range(3):
+                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(1)
+                main_imgs = self.driver.find_elements(By.XPATH, '//img[contains(@class,"note-slider-img")]')
+                desc_imgs = desc_element.find_elements(By.XPATH, './/img')
+                all_imgs = main_imgs + desc_imgs
+                img_url_set = set()
+                img_records = []
+                img_index = 1
+                inserted_images = set()
+                extracted_content: list[str] = [content_text]
+                for img in all_imgs:  # type: ignore
+                    try:
+                        img_url = (img.get_attribute("src") or 
+                                img.get_attribute("data-src") or 
+                                img.get_attribute("data-original") or
+                                img.get_attribute("data-actualsrc"))
+                        if img_url and not img_url.startswith(("http://", "https://")):
+                            img_url = urljoin(url, img_url)
+                        if img_url and img_url.startswith(("http://", "https://")):
+                            if img_url in img_url_set:
+                                continue
+                            img_url_set.add(img_url)
+                            img_name = safe_filename(f"image_{img_index}.jpg")
+                            abs_img_path = os.path.join(img_dir, img_name)
+                            if not os.path.exists(abs_img_path):
+                                try:
+                                    img_data = requests.get(img_url, headers=headers, timeout=10).content
+                                    # 先保存原始图片到临时文件
+                                    tmp_path = abs_img_path + ".tmp"
+                                    with open(tmp_path, 'wb') as f:
+                                        f.write(img_data)
+                                    # 用Pillow转换为jpg
+                                    try:
+                                        with Image.open(tmp_path) as img_pil:
+                                            rgb_img = img_pil.convert('RGB')
+                                            rgb_img.save(abs_img_path, format='JPEG')
+                                        os.remove(tmp_path)
+                                    except Exception as e:
+                                        print(f"图片格式转换失败: {e}")
+                                        os.rename(tmp_path, abs_img_path)  # 保底直接重命名
+                                except Exception as download_error:
+                                    print(f"图片下载失败: {str(download_error)}")
+                                    continue
+                            # 只有下载和保存成功后，才获取alt_text
+                            alt_text = img.get_attribute("alt") or "图片"
+                            if img_url not in inserted_images:
+                                img_records.append({
+                                    'path': os.path.join(img_dir, img_name),
+                                    'alt': alt_text
+                                })
+                                extracted_content.append(f"[IMAGE_PLACEHOLDER:{len(img_records)-1}]")
+                                img_index += 1
+                                inserted_images.add(img_url)
+                    except Exception as e:
+                        print(f"图片处理失败: {str(e)}")
                         continue
-                    img_url_set.add(img_url)
-                    img_name = f"image_{img_index}.jpg"
-                    abs_img_path = os.path.join(img_dir, img_name)
-                    if not os.path.exists(abs_img_path):
+                final_content = []
+                for item in extracted_content:
+                    if isinstance(item, str) and item.startswith("[IMAGE_PLACEHOLDER:"):
                         try:
-                            img_data = requests.get(img_url, headers=headers, timeout=10).content
-                            with open(abs_img_path, 'wb') as f:
-                                f.write(img_data)
-                        except Exception as download_error:
-                            print(f"图片下载失败: {str(download_error)}")
+                            img_id = int(item.split(":")[1].rstrip("]"))
+                            img_info = img_records[img_id]
+                            path = img_info['path'].replace("\\", "/")
+                            final_content.append(f"![{img_info['alt']}]({path})")
+                        except Exception as e:
+                            print(f"图片占位符处理失败: {e}")
                             continue
-                    alt_text = img.get_attribute("alt") or "图片"
-                    if img_url not in inserted_images:
-                        img_records.append({
-                            'path': os.path.join(img_dir, img_name),
-                            'alt': alt_text
-                        })
-                        extracted_content.append(f"[IMAGE_PLACEHOLDER:{len(img_records)-1}]")
-                        img_index += 1
-                        inserted_images.add(img_url)
+                    else:
+                        final_content.append(item)
+                extracted_content_str = f"""# {title}\n\n## 作者信息\n用户名：{author}\n\n## 正文内容\n{chr(10).join(final_content)}\n"""
+                _save_raw_text(extracted_content_str, url, save_dir)
+                # 收集图片路径列表，供多模态API使用
+                img_paths = [img_info['path'] for img_info in img_records]
+                return extracted_content_str, save_dir, img_paths
+                
             except Exception as e:
-                print(f"图片处理失败: {str(e)}")
-                continue
-        final_content = []
-        for item in extracted_content:
-            if isinstance(item, str) and item.startswith("[IMAGE_PLACEHOLDER:"):
-                try:
-                    img_id = int(item.split(":")[1].rstrip("]"))
-                    img_info = img_records[img_id]
-                    path = img_info['path'].replace("\\", "/")
-                    final_content.append(f"![{img_info['alt']}]({path})")
-                except Exception as e:
-                    print(f"图片占位符处理失败: {e}")
-                    continue
-            else:
-                final_content.append(item)
-        extracted_content = f"""# {title}\n\n## 作者信息\n用户名：{author}\n\n## 正文内容\n{chr(10).join(final_content)}\n"""
-        _save_raw_text(extracted_content, url, save_dir)
-        return extracted_content, save_dir 
+                print(f"[尝试 {attempt + 1}/{max_retries}] 处理失败: {str(e)}")
+                if self.driver:
+                    try:
+                        self.driver.quit()
+                    except:
+                        pass
+                    self.driver = None
+                if attempt < max_retries - 1:
+                    print("等待5秒后重试...")
+                    time.sleep(5)
+                else:
+                    print("所有重试都失败了")
+                    return None 

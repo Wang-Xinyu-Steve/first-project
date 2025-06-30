@@ -11,6 +11,8 @@ import requests
 import re
 from useragents import USER_AGENTS
 from util._save_raw_text import _save_raw_text
+from util.summary_xhs import safe_filename
+from PIL import Image
 
 class ZhihuSummarizer(BaseSummarizer):
     def _close_zhihu_popup(self):
@@ -45,7 +47,7 @@ class ZhihuSummarizer(BaseSummarizer):
             self._close_zhihu_popup()
             title = self.driver.find_element(By.XPATH, '//h1[contains(@class,"QuestionHeader-title")]').text.strip()
             desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-            folder_name = f"zhihu_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            folder_name = safe_filename(f"zhihu_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
             save_dir = os.path.join(desktop, folder_name)
             img_dir = os.path.join(save_dir, "images")
             os.makedirs(img_dir, exist_ok=True)
@@ -136,24 +138,36 @@ class ZhihuSummarizer(BaseSummarizer):
                                                     if img_url in seen_images:
                                                         continue
                                                     seen_images.add(img_url)
-                                                    img_name = f"image_{img_index}.jpg"
+                                                    img_name = safe_filename(f"image_{img_index}.jpg")
                                                     abs_img_path = os.path.join(img_dir, img_name)
                                                     if not os.path.exists(abs_img_path):
                                                         try:
                                                             img_data = requests.get(img_url, headers=headers, timeout=10).content
-                                                            with open(abs_img_path, 'wb') as f:
+                                                            # 先保存原始图片到临时文件
+                                                            tmp_path = abs_img_path + ".tmp"
+                                                            with open(tmp_path, 'wb') as f:
                                                                 f.write(img_data)
+                                                            # 用Pillow转换为jpg
+                                                            try:
+                                                                with Image.open(tmp_path) as img_pil:
+                                                                    rgb_img = img_pil.convert('RGB')
+                                                                    rgb_img.save(abs_img_path, format='JPEG')
+                                                                os.remove(tmp_path)
+                                                            except Exception as e:
+                                                                print(f"图片格式转换失败: {e}")
+                                                                os.rename(tmp_path, abs_img_path)  # 保底直接重命名
                                                         except Exception:
                                                             continue
-                                                alt_text = img.get_attribute("alt") or "图片"
-                                                if img_url not in inserted_images:
-                                                    img_records.append({
-                                                        'path': os.path.join(img_dir, img_name),
-                                                        'alt': alt_text
-                                                    })
-                                                    extracted_content.append(f"[IMAGE_PLACEHOLDER:{len(img_records)-1}]")
-                                                    img_index += 1
-                                                    inserted_images.add(img_url)
+                                                    # 只有下载和保存成功后，才获取alt_text
+                                                    alt_text = img.get_attribute("alt") or "图片"
+                                                    if img_url not in inserted_images:
+                                                        img_records.append({
+                                                            'path': os.path.join(img_dir, img_name),
+                                                            'alt': alt_text
+                                                        })
+                                                        extracted_content.append(f"[IMAGE_PLACEHOLDER:{len(img_records)-1}]")
+                                                        img_index += 1
+                                                        inserted_images.add(img_url)
                                             except Exception:
                                                 continue
                                     except Exception:
@@ -276,7 +290,7 @@ class ZhihuSummarizer(BaseSummarizer):
 
             # 2. 创建保存目录
             desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-            folder_name = f"zhihu_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            folder_name = safe_filename(f"zhihu_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
             save_dir = os.path.join(desktop, folder_name)
             img_dir = os.path.join(save_dir, "images")
             os.makedirs(img_dir, exist_ok=True)
@@ -413,25 +427,37 @@ class ZhihuSummarizer(BaseSummarizer):
                                         if img_url in seen_images:
                                             continue
                                         seen_images.add(img_url)
-                                        img_name = f"image_{img_index}.jpg"
+                                        img_name = safe_filename(f"image_{img_index}.jpg")
                                         abs_img_path = os.path.join(img_dir, img_name)
                                         if not os.path.exists(abs_img_path):
                                             try:
                                                 img_data = requests.get(img_url, headers=headers, timeout=10).content
-                                                with open(abs_img_path, 'wb') as f:
+                                                # 先保存原始图片到临时文件
+                                                tmp_path = abs_img_path + ".tmp"
+                                                with open(tmp_path, 'wb') as f:
                                                     f.write(img_data)
+                                                # 用Pillow转换为jpg
+                                                try:
+                                                    with Image.open(tmp_path) as img_pil:
+                                                        rgb_img = img_pil.convert('RGB')
+                                                        rgb_img.save(abs_img_path, format='JPEG')
+                                                    os.remove(tmp_path)
+                                                except Exception as e:
+                                                    print(f"图片格式转换失败: {e}")
+                                                    os.rename(tmp_path, abs_img_path)  # 保底直接重命名
                                             except Exception:
                                                 continue
-                                    alt_text = img.get_attribute("alt") or "图片"
-                                    if img_url not in inserted_images:
-                                        img_records.append({
-                                            'path': os.path.join(img_dir, img_name),
-                                            'alt': alt_text
-                                        })
-                                        extracted_content.append(f"[IMAGE_PLACEHOLDER:{len(img_records)-1}]")
-                                        img_index += 1
-                                        inserted_images.add(img_url)
-                                        print(f"提取图片: {alt_text}")
+                                        # 只有下载和保存成功后，才获取alt_text
+                                        alt_text = img.get_attribute("alt") or "图片"
+                                        if img_url not in inserted_images:
+                                            img_records.append({
+                                                'path': os.path.join(img_dir, img_name),
+                                                'alt': alt_text
+                                            })
+                                            extracted_content.append(f"[IMAGE_PLACEHOLDER:{len(img_records)-1}]")
+                                            img_index += 1
+                                            inserted_images.add(img_url)
+                                            print(f"提取图片: {alt_text}")
                                 except Exception:
                                     continue
                         elif tag_name in ['ul', 'ol']:

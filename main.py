@@ -13,48 +13,40 @@ from zhihu import ZhihuSummarizer
 from xiaohongshu import XiaohongshuSummarizer
 from weixin import WeixinSummarizer
 from util.process_url import process_url
+from elsepage import ElsepageSummarizer
 
 def main():
     check_dependencies()
     parser = argparse.ArgumentParser(description='网页内容摘要生成工具')
-    parser.add_argument('url', type=str, help='要处理的网页URL')
-    parser.add_argument('--output', '-o', type=str, help='输出文件路径', default=None)
-    parser.add_argument('--key', '-k', type=str, help='DeepSeek API密钥', default=None)
-    parser.add_argument('--model', '-m', type=str, help='使用的模型名称', default="deepseek-chat")
+    parser.add_argument('url', help='要处理的网页URL')
+    parser.add_argument('--key', help='API密钥', default='bce-v3/ALTAK-Of56tLQhJtuDtnjlsohkj/a38fd6231c7332083163522f6c8fc534b1c87a64')
+    parser.add_argument('--model', help='模型名称', default='ernie-4.5-turbo-vl-preview')
+    parser.add_argument('--output', help='输出文件路径')
     args = parser.parse_args()
-    api_key = args.key or os.getenv("DEEPSEEK_API_KEY")
-    if not api_key:
-        print("[错误] 未提供DeepSeek API密钥！")
-        print("请通过 --key 参数或设置环境变量 DEEPSEEK_API_KEY 提供密钥")
-        return
-    url = args.url
-    if "zhihu.com" in url:
+    
+    # 根据URL选择对应的处理器
+    if "zhihu.com" in args.url:
         summarizer = ZhihuSummarizer()
-    elif "xiaohongshu.com" in url or "xhslink.com" in url:
+    elif "xiaohongshu.com" in args.url or "xhslink.com" in args.url:
         summarizer = XiaohongshuSummarizer()
-    elif "weixin.qq.com" in url:
+    elif "mp.weixin.qq.com" in args.url:
         summarizer = WeixinSummarizer()
     else:
-        print("暂不支持该类型网页！")
-        return
-    try:
-        summary = process_url(
-            summarizer=summarizer,
-            url=url,
-            api_key=api_key,
-            model_name=args.model,
-            output_path=args.output
-        )
-        if summary:
-            print("\n摘要预览:")
-            print(summary[:500] + "..." if len(summary) > 500 else summary)
-    except Exception as e:
-        print(f"[严重错误] 处理失败: {str(e)}")
+        summarizer = ElsepageSummarizer()
+    
+    # 处理URL
+    summary = process_url(summarizer, args.url, args.key, args.model, args.output)
+    
+    if summary:
+        print("\n摘要预览:")
+        print(summary[:500] + "..." if len(summary) > 500 else summary)
+    else:
+        print("处理失败")
 
 if __name__ == "__main__":
-    try:
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    except Exception:
-        pass
+    # try:
+    #     import io
+    #     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    # except Exception:
+    #     pass
     main() 
