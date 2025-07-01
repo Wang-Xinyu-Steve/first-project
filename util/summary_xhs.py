@@ -103,15 +103,59 @@ def summary_xhs(text: str, img_paths: list, api_key: str, model_name: str) -> st
         
         # 添加文本内容
         user_prompt = filter_non_bmp(
-            "你是一个专业的新媒体内容分析师。请严格按照如下要求总结：\n"
-            "1. 对每一张图片，逐张、详细、具体描述图片内容，不能泛泛而谈，不要归纳、想象、增删图片信息。\n"
-            "2. 图片总结请用编号列表，格式为：\n"
-            "   1. 图片1：<详细内容>\n"
-            "   2. 图片2：<详细内容>\n"
-            "3. 文字内容请单独总结。\n"
-            "4. 图片和文字内容请分开输出。\n"
-            "5. 输出格式示例：\n"
-            "【图片总结】\n1. 图片1：...\n2. 图片2：...\n【文字总结】\n...\n"
+            """
+            你是一个专业的新媒体内容分析师，请严格按此流程处理：
+
+            （一）图片内容分析
+            1. 图片1
+            - 内容转录（原文用「」标注，保留换行）
+                「第一段文字...」
+                「第二段文字...」
+            - 排版解析 
+                布局：分栏/流程图/时间轴等
+                重点标注：颜色/字号/下划线等
+            - 数据关联 对应文字章节X段Y行
+
+            2. 图片2
+            ...
+
+            （二）文本内容处理
+            - 核心框架
+            标题层级：H1「主标题」> H2「小标题」...
+            - 关键信息
+            论点1（支持数据：...）
+            论点2（案例：...）
+            - 图片锚点
+            图1相关：第X段「引用句」
+            图3相关：第Y段数据
+
+            三、输出模板
+            【图片内容分析】
+            1. 图片1
+            - 内容转录：
+                「2023年用户增长数据」
+                「Q1: 15% ↑ | Q2: 22% ↑」
+            - 排版解析：
+                双栏对比布局
+                增长率使用绿色加粗
+            - 数据关联：正文第三段
+
+            2. 图片2
+            ...
+
+            【文本内容摘要】
+            - 核心主张：...
+            - 数据支撑：...（精确数值）
+            - 图片呼应点：
+            图1验证「...」观点
+            图2例证「...」描述
+
+            四、执行要求
+            1. 文字转录误差率<5%
+            2. 每个图片关联点必须标注文字位置
+            3. 禁用模糊表述如"相关"/"可能"
+            4. 图片的所有文字内容必须全部展示出来，而不是只展示部分文字
+            """
             f"内容如下：\n{text}"
         )
         
@@ -130,34 +174,41 @@ def summary_xhs(text: str, img_paths: list, api_key: str, model_name: str) -> st
         payload = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "请生成结构化、简洁、包含要点的Markdown格式摘要。保留关键数据和专业术语。使用中文输出结果。注意：图片链接全部保留引用"},
                 {"role": "user", "content": content}
             ],
             "temperature": 0.3,
             "max_tokens": 2000
         }
-        print("已经构造了payload")
-        response = requests.post(api_url, headers=headers, data=json.dumps(payload), timeout=60)
-        print("已经发送了请求")
-        result = response.json()
-        print("已经收到了响应")
-        if 'id' in result:
-            print(f"请求ID: {result['id']}")
-        if 'object' in result:
-            print(f"对象类型: {result['object']}")
-        if 'created' in result:
-            print(f"创建时间: {result['created']}")
-        if 'model' in result:
-            print(f"模型: {result['model']}")
-        if 'usage' in result:
-            print(f"使用情况: {result['usage']}")
-        if 'choices' in result:
-            summary = result['choices'][0]['message']['content'].strip()
-        else:
-            summary = "摘要生成失败：API返回空内容"
-        print("完整API响应：", json.dumps(result, ensure_ascii=False, indent=2))
-        print("百度智能云千帆平台多模态摘要生成成功")
-        return summary
+        
+        # 重试机制
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                print(f"[DEBUG] 多模态API请求尝试 {attempt + 1}/{max_retries + 1}")
+                # 增加超时时间，多模态请求通常需要更长时间
+                response = requests.post(api_url, headers=headers, data=json.dumps(payload), timeout=120)
+                result = response.json()
+                if 'choices' in result:
+                    summary = result['choices'][0]['message']['content'].strip()
+                    print("百度智能云千帆平台多模态摘要生成成功")
+                    return summary
+                else:
+                    summary = "摘要生成失败：API返回空内容"
+                    print("完整API响应：", json.dumps(result, ensure_ascii=False, indent=2))
+                    return summary
+            except requests.exceptions.ReadTimeout:
+                if attempt < max_retries:
+                    print(f"[警告] 多模态API请求超时，尝试重试 ({attempt + 1}/{max_retries})")
+                    continue
+                else:
+                    print(f"[错误] 多模态API请求最终超时，回退到文本模式")
+                    raise
+            except Exception as e:
+                print(f"[错误] 多模态API请求失败: {str(e)}")
+                raise
+        
+        # 如果所有重试都失败，抛出异常让外层处理
+        raise Exception("多模态API请求失败")
         
     except Exception as e:
         print(f"[错误] 百度智能云千帆平台多模态API调用失败: {str(e)}")
@@ -190,7 +241,8 @@ def fallback_text_summary(text: str) -> str:
                 {"role": "user", "content": f"请为以下内容生成详细摘要：\n\n{text}"}
             ],
             temperature=0.3,
-            max_tokens=2000
+            max_tokens=2000,
+            timeout=60  # 文本模式设置60秒超时
         )
         
         summary = completion.choices[0].message.content
