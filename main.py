@@ -19,18 +19,37 @@ def main():
     check_dependencies()
     parser = argparse.ArgumentParser(description='网页内容摘要生成工具')
     parser.add_argument('url', help='要处理的网页URL')
+    parser.add_argument('--force-login', action='store_true', help='强制重新登录')
+    parser.add_argument('--no-login', action='store_true', help='跳过登录，直接以游客身份访问')
     parser.add_argument('--key', help='API密钥', default='bce-v3/ALTAK-Of56tLQhJtuDtnjlsohkj/a38fd6231c7332083163522f6c8fc534b1c87a64')
     parser.add_argument('--model', help='模型名称', default='ernie-4.5-turbo-vl-preview')
     parser.add_argument('--output', help='输出文件路径')
     args = parser.parse_args()
     
-    # 根据URL选择对应的处理器
-    if "zhihu.com" in args.url:
-        summarizer = ZhihuSummarizer()
-    elif "xiaohongshu.com" in args.url or "xhslink.com" in args.url:
+    url = args.url
+    
+    # 根据URL判断平台
+    if "xiaohongshu.com" in url or "xhslink.com" in url:
+        print("检测到小红书链接")
         summarizer = XiaohongshuSummarizer()
-    elif "mp.weixin.qq.com" in args.url:
+        if args.force_login:
+            print("用户选择强制重新登录")
+            summarizer.session_manager.manual_login()
+
+    elif "zhihu.com" in url:
+        print("检测到知乎链接")
+        summarizer = ZhihuSummarizer()
+        if args.force_login:
+            print("用户选择强制重新登录")
+            summarizer.session_manager.manual_login()
+
+    elif "mp.weixin.qq.com" in url:
+        print("检测到微信公众号链接")
         summarizer = WeixinSummarizer()
+        if args.force_login:
+            print("用户选择强制重新登录")
+            summarizer.session_manager.manual_login()
+
     else:
         summarizer = ElsepageSummarizer()
     

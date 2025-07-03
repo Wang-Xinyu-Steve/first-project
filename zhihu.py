@@ -5,16 +5,59 @@ from selenium.webdriver.support import expected_conditions as EC
 import os
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urljoin
 import requests
 import re
+from typing import Optional, Dict, Any
 from useragents import USER_AGENTS
 from util._save_raw_text import _save_raw_text
 from util.summary_xhs import safe_filename
 from PIL import Image
+from typing import Optional
+import requests
+
+class ZhihuSessionManager:
+    def manual_login(self) -> None:
+        from selenium import webdriver
+        from selenium.webdriver.edge.options import Options
+        print("[ZhihuSessionManager] 正在打开知乎登录页面...")
+        edge_options = Options()
+        edge_options.add_argument('--no-sandbox')
+        edge_options.add_argument('--disable-dev-shm-usage')
+        edge_options.add_argument('--disable-blink-features=AutomationControlled')
+        edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        edge_options.add_experimental_option('useAutomationExtension', False)
+        browser_profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_profile_zhihu")
+        edge_options.add_argument(f"--user-data-dir={browser_profile_dir}")
+        print(f"[DEBUG] 使用浏览器用户数据目录: {browser_profile_dir}")
+        driver = webdriver.Edge(options=edge_options)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        driver.get("https://www.zhihu.com/signin")
+        print("[ZhihuSessionManager] 请在浏览器中完成登录操作...")
+        input("登录完成后请按回车继续...")
+        driver.quit()
 
 class ZhihuSummarizer(BaseSummarizer):
+    def __init__(self):
+        super().__init__()
+        self.session_manager = ZhihuSessionManager()
+        self.driver = None
+
+    def _init_edge_driver(self):
+        from selenium import webdriver
+        from selenium.webdriver.edge.options import Options
+        edge_options = Options()
+        edge_options.add_argument('--no-sandbox')
+        edge_options.add_argument('--disable-dev-shm-usage')
+        edge_options.add_argument('--disable-blink-features=AutomationControlled')
+        edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        edge_options.add_experimental_option('useAutomationExtension', False)
+        browser_profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_profile_zhihu")
+        edge_options.add_argument(f"--user-data-dir={browser_profile_dir}")
+        self.driver = webdriver.Edge(options=edge_options)
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
     def _close_zhihu_popup(self):
         assert self.driver is not None
         max_attempts = 3
@@ -37,6 +80,7 @@ class ZhihuSummarizer(BaseSummarizer):
         if self.driver is None:
             self._init_edge_driver()
         assert self.driver is not None
+        
         self.driver.get(url)
         time.sleep(2)
         headers = {'User-Agent': random.choice(USER_AGENTS)}

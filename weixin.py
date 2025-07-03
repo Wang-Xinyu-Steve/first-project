@@ -7,14 +7,56 @@ import time
 from datetime import datetime
 from urllib.parse import urljoin
 import re
+import requests
+from typing import Optional
 from util._save_raw_text import _save_raw_text
 from util.summary_xhs import safe_filename
 from PIL import Image
 
+class WeixinSessionManager:
+    def manual_login(self) -> None:
+        from selenium import webdriver
+        from selenium.webdriver.edge.options import Options
+        print("[WeixinSessionManager] 正在打开微信公众号登录页面...")
+        edge_options = Options()
+        edge_options.add_argument('--no-sandbox')
+        edge_options.add_argument('--disable-dev-shm-usage')
+        edge_options.add_argument('--disable-blink-features=AutomationControlled')
+        edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        edge_options.add_experimental_option('useAutomationExtension', False)
+        browser_profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_profile_weixin")
+        edge_options.add_argument(f"--user-data-dir={browser_profile_dir}")
+        print(f"[DEBUG] 使用浏览器用户数据目录: {browser_profile_dir}")
+        driver = webdriver.Edge(options=edge_options)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        driver.get("https://mp.weixin.qq.com/")
+        print("[WeixinSessionManager] 请在浏览器中完成登录操作...")
+        input("登录完成后请按回车继续...")
+        driver.quit()
+
 class WeixinSummarizer(BaseSummarizer):
+    def __init__(self):
+        super().__init__()
+        self.session_manager = WeixinSessionManager()
+        self.driver = None
+
+    def _init_edge_driver(self):
+        from selenium import webdriver
+        from selenium.webdriver.edge.options import Options
+        edge_options = Options()
+        edge_options.add_argument('--no-sandbox')
+        edge_options.add_argument('--disable-dev-shm-usage')
+        edge_options.add_argument('--disable-blink-features=AutomationControlled')
+        edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        edge_options.add_experimental_option('useAutomationExtension', False)
+        browser_profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_profile_weixin")
+        edge_options.add_argument(f"--user-data-dir={browser_profile_dir}")
+        self.driver = webdriver.Edge(options=edge_options)
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
     def fetch_web_content(self, url: str):
         if self.driver is None or not hasattr(self.driver, 'requests'):
-            self._init_edge_wire_driver()
+            self._init_edge_driver()
         assert self.driver is not None
         self.driver.get(url)
         time.sleep(2)

@@ -43,6 +43,7 @@ def image_to_base64(image_path):
         elif ext == '.bmp':
             mime_type = 'image/bmp'
         base64_data = base64.b64encode(image_data).decode('utf-8')
+        print(f"[DEBUG] base64前500位: {base64_data[:500]}")
         return f"data:{mime_type};base64,{base64_data}"
     except Exception as e:
         print(f"[DEBUG] 图片转Base64失败: {str(e)}")
@@ -82,8 +83,10 @@ def summary_xhs(text: str, img_paths: list, api_key: str, model_name: str) -> st
             for i, img_path in enumerate(img_paths):
                 if os.path.exists(img_path):
                     print(f"处理图片 {i+1}/{len(img_paths)}: {os.path.basename(img_path)}")
+                    print(f"[DEBUG] 图片大小: {os.path.getsize(img_path)} 字节")
                     base64_data = image_to_base64(img_path)
                     if base64_data:
+                        print(f"[DEBUG] base64前500位: {base64_data[:500]}")
                         image_contents.append(base64_data)
                         print(f"图片处理成功: {os.path.basename(img_path)}")
                     else:
@@ -162,8 +165,14 @@ def summary_xhs(text: str, img_paths: list, api_key: str, model_name: str) -> st
         content.append({"type": "text", "text": user_prompt})
         
         # 添加图片Base64数据
-        for base64_data in image_contents:
+        # 限制图片数量，避免API参数错误
+        max_images = 10  # 改回6张图片，测试API是否能正常处理
+        print(f"[提示] 为避免API限制，将处理前{max_images}张图片进行分析")
+        for i, base64_data in enumerate(image_contents[:max_images]):
             content.append({"type": "image_url", "image_url": {"url": base64_data}})
+            print(f"[DEBUG] 添加图片 {i+1}/{min(len(image_contents), max_images)}")
+        
+        print(f"[DEBUG] 实际传递图片数量: {len(content) - 1}")  # 减去文本内容
         
         # 使用 requests 直接调用千帆平台API
         api_url = "https://qianfan.baidubce.com/v2/chat/completions"
@@ -177,8 +186,10 @@ def summary_xhs(text: str, img_paths: list, api_key: str, model_name: str) -> st
                 {"role": "user", "content": content}
             ],
             "temperature": 0.3,
-            "max_tokens": 2000
+            "max_tokens": 2000,
+            "stream": False
         }
+        print(f"[DEBUG] API请求体前500字符: {json.dumps(payload, ensure_ascii=False)[:500]}")
         
         # 重试机制
         max_retries = 2
@@ -203,8 +214,19 @@ def summary_xhs(text: str, img_paths: list, api_key: str, model_name: str) -> st
                 else:
                     print(f"[错误] 多模态API请求最终超时，回退到文本模式")
                     raise
-            except Exception as e:
+            except requests.exceptions.RequestException as e:
                 print(f"[错误] 多模态API请求失败: {str(e)}")
+                # 打印完整的错误响应
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_detail = e.response.json()
+                        print(f"[DEBUG] 完整错误响应: {json.dumps(error_detail, ensure_ascii=False, indent=2)}")
+                    except:
+                        print(f"[DEBUG] 错误响应状态码: {e.response.status_code}")
+                        print(f"[DEBUG] 错误响应内容: {e.response.text}")
+                raise
+            except Exception as e:
+                print(f"[错误] 其他异常: {str(e)}")
                 raise
         
         # 如果所有重试都失败，抛出异常让外层处理
