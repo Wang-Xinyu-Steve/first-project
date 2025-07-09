@@ -180,7 +180,15 @@ class XiaohongshuSummarizer(BaseSummarizer):
                             continue
                     else:
                         final_content.append(item)
+                # 提取评论区内容
+                comments_content = self._extract_comments()
+                
                 extracted_content_str = f"""# {title}\n\n## 作者信息\n用户名：{author}\n\n## 正文内容\n{chr(10).join(final_content)}\n"""
+                
+                # 如果有评论，添加到内容中
+                if comments_content:
+                    extracted_content_str += f"\n## 评论区\n{comments_content}\n"
+                
                 _save_raw_text(extracted_content_str, url, save_dir)
                 # 收集图片路径列表，供多模态API使用
                 img_paths = [img_info['path'] for img_info in img_records]
@@ -199,4 +207,125 @@ class XiaohongshuSummarizer(BaseSummarizer):
                     time.sleep(5)
                 else:
                     print("所有重试都失败了")
-                    return None 
+                    return None
+
+    def _extract_comments(self) -> str:
+        """提取小红书评论区的评论内容，支持主评论和递归回复结构"""
+        try:
+            if self.driver is None:
+                print("[DEBUG] driver为None，无法提取评论")
+                return ""
+            
+            # 滚动到评论区
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            
+            # 查找评论区容器
+            comment_container = None
+            comment_selectors = [
+                '//div[contains(@class, "comment")]',
+                '//div[contains(@class, "CommentList")]',
+                '//div[contains(@class, "comments")]',
+                '//div[contains(@class, "comment-list")]',
+                '//div[contains(@class, "comment-container")]'
+            ]
+            for selector in comment_selectors:
+                try:
+                    comment_container = self.driver.find_element(By.XPATH, selector)
+                    if comment_container:
+                        print("[DEBUG] 找到小红书评论区容器")
+                        break
+                except Exception:
+                    continue
+            if not comment_container:
+                print("[DEBUG] 未找到小红书评论区容器")
+                return ""
+            
+            # 主评论：parent-comment下的comment-item（不含comment-item-sub）
+            main_comment_items = comment_container.find_elements(
+                By.XPATH, './/div[contains(@class, "parent-comment")]/div[contains(@class, "comment-item") and not(contains(@class, "comment-item-sub"))]'
+            )
+            print(f"[DEBUG] 找到 {len(main_comment_items)} 条主评论")
+            
+            def parse_comment_item(comment_element, level=0):
+                # 用户名
+                username = "未知用户"
+                try:
+                    username_element = comment_element.find_element(By.XPATH, './/a[contains(@class, "name")]')
+                    username = username_element.text.strip()
+                except Exception:
+                    pass
+                # 内容
+                comment_text = ""
+                try:
+                    content_element = comment_element.find_element(By.XPATH, './/div[contains(@class, "content")]//span[contains(@class, "note-text")]')
+                    comment_text = content_element.text.strip()
+                except Exception:
+                    try:
+                        content_element = comment_element.find_element(By.XPATH, './/div[contains(@class, "content")]')
+                        comment_text = content_element.text.strip()
+                    except Exception:
+                        pass
+                # 时间
+                comment_time = ""
+                try:
+                    time_element = comment_element.find_element(By.XPATH, './/div[contains(@class, "date")]/span[1]')
+                    comment_time = time_element.text.strip()
+                except Exception:
+                    pass
+                # 只在当前主评论下查找直接下级的reply-container
+                replies = []
+                try:
+                    reply_container = comment_element.find_element(By.XPATH, './following-sibling::div[contains(@class, "reply-container")]')
+                    reply_items = reply_container.find_elements(By.XPATH, './div[contains(@class, "list-container")]/div[contains(@class, "comment-item-sub")]')
+                    for reply_item in reply_items:
+                        reply_data = parse_comment_item(reply_item, level + 1)
+                        if reply_data and reply_data['content']:
+                            replies.append(reply_data)
+                except Exception:
+                    pass
+                return {
+                    'username': username,
+                    'content': comment_text,
+                    'time': comment_time,
+                    'replies': replies,
+                    'level': level
+                }
+            
+            main_comments = []
+            comment_index = 1
+            for comment_item in main_comment_items:
+                comment_data = parse_comment_item(comment_item, 0)
+                if comment_data and comment_data['content']:
+                    comment_data['index'] = comment_index
+                    main_comments.append(comment_data)
+                    comment_index += 1
+            
+            def format_comment(comment, level=0):
+                lines = []
+                indent = '  ' * level
+                if level == 0:
+                    lines.append(f"{indent}### 评论 {comment['index']}")
+                else:
+                    lines.append(f"{indent}#### 回复")
+                lines.append(f"{indent}**用户**: {comment['username']}")
+                if comment['time']:
+                    lines.append(f"{indent}**时间**: {comment['time']}")
+                lines.append(f"{indent}**内容**: {comment['content']}")
+                for reply in comment['replies']:
+                    lines.extend(format_comment(reply, level + 1))
+                return lines
+            
+            if main_comments:
+                all_lines = []
+                for comment in main_comments:
+                    all_lines.extend(format_comment(comment))
+                comments_text = f"**评论总数**: {len(main_comments)} 条\n\n" + "\n".join(all_lines)
+                print(f"[DEBUG] 成功提取 {len(main_comments)} 条主评论及其回复")
+                return comments_text
+            else:
+                print("[DEBUG] 没有提取到小红书评论")
+                return ""
+        except Exception as e:
+            print(f"[DEBUG] 小红书评论区提取过程中出错: {e}")
+            return "" 

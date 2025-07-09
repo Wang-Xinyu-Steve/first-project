@@ -38,11 +38,24 @@ class ZhihuSessionManager:
         input("登录完成后请按回车继续...")
         driver.quit()
 
+    def check_login_record(self) -> bool:
+        """检测user-data-dir目录下是否有Cookies文件，判断是否有登录记录"""
+        browser_profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_profile_zhihu")
+        cookie_path = os.path.join(browser_profile_dir, "Default", "Cookies")
+        if os.path.exists(cookie_path):
+            print("[ZhihuSessionManager] 检测到已有登录记录，将尝试自动复用。")
+            return True
+        else:
+            print("[ZhihuSessionManager] 未检测到登录记录，可能需要手动登录。")
+            return False
+
 class ZhihuSummarizer(BaseSummarizer):
     def __init__(self):
         super().__init__()
         self.session_manager = ZhihuSessionManager()
         self.driver = None
+        # 初始化时检测登录记录
+        self.session_manager.check_login_record()
 
     def _init_edge_driver(self):
         from selenium import webdriver
@@ -55,6 +68,8 @@ class ZhihuSummarizer(BaseSummarizer):
         edge_options.add_experimental_option('useAutomationExtension', False)
         browser_profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_profile_zhihu")
         edge_options.add_argument(f"--user-data-dir={browser_profile_dir}")
+        # 再次检测登录记录
+        self.session_manager.check_login_record()
         self.driver = webdriver.Edge(options=edge_options)
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
@@ -663,6 +678,129 @@ class ZhihuSummarizer(BaseSummarizer):
             
             extracted_content = final_content
             content = "\n".join(extracted_content)
+            # 提取评论区内容
+            comments_content = self._extract_zhihu_column_comments()
+            
             extracted_content = f"""# {title}\n\n## 作者信息\n姓名：{author_info['name']}\n简介：{author_info['bio']}\n\n## 正文内容\n{content}\n"""
+            
+            # 如果有评论，添加到内容中
+            if comments_content:
+                extracted_content += f"\n## 评论区\n{comments_content}\n"
+            
             _save_raw_text(extracted_content, url, save_dir)
             return extracted_content, save_dir
+
+    def _extract_zhihu_column_comments(self) -> str:
+        """知乎专栏评论区：顺序分组主评论和回复，输出树状结构"""
+        try:
+            if self.driver is None:
+                print("[DEBUG] driver为None，无法提取评论")
+                return ""
+            # 滚动到评论区
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            # 查找评论区容器
+            comment_container = None
+            comment_selectors = [
+                '//div[@data-za-detail-view-path-module="CommentList"]',
+                '//div[contains(@class, "Comments-container")]',
+                '//div[contains(@class, "CommentList")]'
+            ]
+            for selector in comment_selectors:
+                try:
+                    comment_container = self.driver.find_element(By.XPATH, selector)
+                    if comment_container:
+                        print("[DEBUG] 找到评论区容器")
+                        break
+                except Exception:
+                    continue
+            if not comment_container:
+                print("[DEBUG] 未找到评论区容器")
+                return ""
+            # 获取评论数量
+            comment_count = "未知"
+            try:
+                count_element = comment_container.find_element(By.XPATH, './/div[contains(@class, "css-1k10w8f")]')
+                comment_count = count_element.text.strip()
+                print(f"[DEBUG] 评论数量: {comment_count}")
+            except Exception:
+                print("[DEBUG] 无法获取评论数量")
+            # 找到评论区主容器（如.css-18ld3w0）
+            try:
+                main_comment_area = comment_container.find_element(By.CSS_SELECTOR, '.css-18ld3w0')
+            except Exception:
+                print("[DEBUG] 未找到主评论区容器 .css-18ld3w0")
+                return ""
+            # 递归树状分组主评论和回复
+            def parse_comment(div, level=0):
+                try:
+                    username = div.find_element(By.XPATH, './/a[contains(@class, "css-10u695f")]').text.strip()
+                except Exception:
+                    username = "未知用户"
+                try:
+                    comment_text = div.find_element(By.XPATH, './/div[contains(@class, "CommentContent")]').text.strip()
+                except Exception:
+                    comment_text = ""
+                try:
+                    comment_time = div.find_element(By.XPATH, './/span[contains(@class, "css-12cl38p")]').text.strip()
+                except Exception:
+                    comment_time = ""
+                try:
+                    like_button = div.find_element(By.XPATH, './/button[contains(@class, "Button--withLabel")]')
+                    like_text = like_button.text.strip()
+                    like_count = like_text if like_text and like_text not in ["回复", "喜欢"] else ""
+                except Exception:
+                    like_count = ""
+                is_author = False
+                try:
+                    author_badge = div.find_element(By.XPATH, './/span[contains(@class, "css-8v0dsd") and text()="作者"]')
+                    is_author = True
+                except Exception:
+                    pass
+                # 递归查找直接子评论
+                child_divs = div.find_elements(By.XPATH, './div[@data-id]')
+                replies = [parse_comment(child, level+1) for child in child_divs]
+                return {
+                    'username': username,
+                    'content': comment_text,
+                    'time': comment_time,
+                    'like_count': like_count,
+                    'is_author': is_author,
+                    'replies': replies,
+                    'level': level
+                }
+            # 只查找一级主评论（父级是main_comment_area的直接div[data-id]）
+            main_comments = []
+            for div in main_comment_area.find_elements(By.XPATH, './div[@data-id]'):
+                main_comments.append(parse_comment(div, 0))
+            # 格式化输出
+            def format_comments(comments):
+                lines = []
+                for idx, comment in enumerate(comments, 1):
+                    indent = '  ' * comment['level']
+                    if comment['level'] == 0:
+                        lines.append(f"{indent}### 评论 {idx}")
+                    else:
+                        lines.append(f"{indent}#### 回复")
+                    userline = f"{indent}**用户**: {comment['username']}"
+                    if comment['is_author']:
+                        userline += " (作者)"
+                    lines.append(userline)
+                    lines.append(f"{indent}**时间**: {comment['time']}")
+                    if comment['like_count']:
+                        lines.append(f"{indent}**点赞**: {comment['like_count']}")
+                    lines.append(f"{indent}**内容**: {comment['content']}")
+                    # 递归输出回复
+                    if comment['replies']:
+                        lines.extend(format_comments(comment['replies']))
+                return lines
+            if main_comments:
+                comments_text = f"**评论总数**: {comment_count}\n\n" + "\n".join(format_comments(main_comments))
+                print(f"[DEBUG] 成功递归树状分组主评论和回复")
+                return comments_text
+            else:
+                print("[DEBUG] 没有提取到评论")
+                return ""
+        except Exception as e:
+            print(f"[DEBUG] 评论区分组提取过程中出错: {e}")
+            return ""
