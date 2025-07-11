@@ -3,6 +3,7 @@ import re
 import hashlib
 from util.generate_summary import generate_summary
 from util.save_to_markdown import save_to_markdown
+from util.generate_tags import generate_content_tags
 from typing import Optional
 from util.summary_xhs import summary_xhs
 
@@ -34,16 +35,31 @@ def process_url(summarizer, url: str, api_key: str, model_name: str, output_path
         img_paths = []
     
     print(f"获取内容成功, 长度: {len(raw_content)}字符")
+    
+    # 生成摘要
     if "xiaohongshu.com" in url or "xhslink.com" in url:
         summary = summary_xhs(raw_content, img_paths, api_key, model_name)
     else:
         summary = generate_summary(raw_content, api_key, model_name)
     print(f"摘要生成完成, 长度: {len(summary)}字符")
-    if not output_path:
+    
+    # 生成标签
+    print("正在生成内容标签...")
+    try:
+        tags = generate_content_tags(raw_content, api_key, model_name)
+        print(f"标签生成完成")
+        print(f"生成的标签: {tags}")
+    except Exception as e:
+        print(f"标签生成失败: {str(e)}")
+        tags = {"content_tags": [], "user_purpose": []}
+    
+    if not output_path:     
         domain = re.sub(r'[^a-zA-Z0-9]', '_', url.split('//')[-1].split('/')[0])
         path_hash = hashlib.md5(url.encode()).hexdigest()[:6]
         # 保留中文，去除emoji
         output_name = safe_filename(f"{domain}_{path_hash}_summary.md")
         output_path = os.path.join(dir, output_name)
-    save_to_markdown(url, summary, output_path, model_name)
+    
+    # 保存包含标签的Markdown文件
+    save_to_markdown(url, summary, output_path, model_name, tags)
     return summary 
