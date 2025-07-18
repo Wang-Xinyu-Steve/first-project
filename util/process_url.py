@@ -4,6 +4,7 @@ import hashlib
 from util.generate_summary import generate_summary
 from util.save_to_markdown import save_to_markdown
 from util.generate_tags import generate_content_tags
+from util.organize_by_tags import organize_by_tags, create_main_index
 from typing import Optional
 from util.summary_xhs import summary_xhs
 
@@ -16,7 +17,7 @@ def safe_filename(s):
         # 保留英文、数字、下划线、点、横线
         if re.match(r'[A-Za-z0-9._-]', c):
             return True
-        # 去除emoji和其他特殊符号
+        # 去除emoji和其他特殊符号‘
         return False
     return ''.join(c for c in s if is_valid_char(c))
 
@@ -62,4 +63,9 @@ def process_url(summarizer, url: str, api_key: str, model_name: str, output_path
     
     # 保存包含标签的Markdown文件
     save_to_markdown(url, summary, output_path, model_name, tags)
+    
+    # 按标签整理文件
+    print("正在按标签整理文件...")
+    organize_by_tags(output_path, tags)
+    
     return summary 
